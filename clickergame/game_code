@@ -1,0 +1,587 @@
+import pygame
+import time
+import json
+import os
+import random
+from settings import draw_settings_menu, handle_color_selection, handle_custom_color_click
+
+pygame.init()
+
+# --- Background music setup ---
+try:
+    pygame.mixer.init()
+except Exception:
+    pass
+
+music_short = None
+music_long = None
+music_extra = []
+# Look for music files in music/ folder
+game_dir = os.path.dirname(__file__)
+music_dir = os.path.join(game_dir, 'music')
+if os.path.exists(music_dir):
+    for fname in os.listdir(music_dir):
+        fname_lower = fname.lower()
+        if fname_lower.endswith((".mp3", ".ogg", ".wav")):
+            fpath = os.path.join(music_dir, fname)
+            if "long" in fname_lower and "background" in fname_lower:
+                music_long = fpath
+            elif "background" in fname_lower and not music_short:
+                music_short = fpath
+            elif fname_lower not in ("background music.mp3", "longbackground music.mp3"):
+                # collect other music files (santa.mp3, snow.mp3, etc.)
+                music_extra.append(fpath)
+
+music_muted = False
+_saved_volume = 1.0
+# Collect all music files and shuffle
+all_music = []
+if music_short:
+    all_music.append(music_short)
+if music_long:
+    all_music.append(music_long)
+all_music.extend(music_extra)
+random.shuffle(all_music)
+
+try:
+    if all_music:
+        # Play first shuffled track
+        pygame.mixer.music.load(all_music[0])
+        pygame.mixer.music.play(loops=0)
+        # Queue remaining tracks
+        try:
+            for track in all_music[1:]:
+                pygame.mixer.music.queue(track)
+        except Exception:
+            pass
+except Exception:
+    pass
+
+# Display and color setup
+display_width = 800
+display_height = 600
+white = (255, 255, 255)
+black = (0, 0, 0)
+grey = (128, 128, 128)
+light_grey = (224, 224, 224)
+
+gameDisplay = pygame.display.set_mode((display_width, display_height))
+pygame.display.set_caption('Clicker Game')
+
+# --- Window icon ---
+icon = pygame.image.load("pictures/coin.webp")
+pygame.display.set_icon(icon)
+
+# --- Button images ---
+coin_img = pygame.image.load("pictures/coin.webp").convert_alpha()
+coin_img = pygame.transform.smoothscale(coin_img, (100, 100))
+coin_hover = pygame.transform.smoothscale(coin_img, (110, 110))
+coin_click = pygame.transform.smoothscale(coin_img, (90, 90))
+
+# --- Upgrade and Auto Miner icons ---
+upgrade_icon = None
+autominer_icon = None
+try:
+    upgrade_icon = pygame.image.load("pictures/upgrade.webp").convert_alpha()
+except Exception:
+    pass
+try:
+    autominer_icon = pygame.image.load("pictures/autominer.png").convert_alpha()
+except Exception:
+    pass
+
+# --- Settings icon (load or create) ---
+settings_img = None
+for fname in ("pictures/settings.jpg", "pictures/settings.png", "settings.png", "settings.jpg"):
+    try:
+        settings_img = pygame.image.load(fname).convert_alpha()
+        break
+    except Exception:
+        settings_img = None
+
+if settings_img is None:
+    # create a simple settings icon and save it
+    settings_img = pygame.Surface((64, 64), pygame.SRCALPHA)
+    settings_img.fill((0, 0, 0, 0))
+    pygame.draw.circle(settings_img, light_grey, (32, 32), 28)
+    font = pygame.font.Font('freesansbold.ttf', 28)
+    s_surf = font.render('S', True, black)
+    s_rect = s_surf.get_rect(center=(32, 32))
+    settings_img.blit(s_surf, s_rect)
+    try:
+        pygame.image.save(settings_img, "settings.png")
+    except Exception:
+        pass
+
+# base icon size (cap to avoid huge icons if user supplies a large image)
+settings_icon_base = min(settings_img.get_width(), 48)
+
+btn_x = 400
+btn_y = 300
+is_hover = False
+is_pressed = False
+settings_icon_margin_base = 20
+
+clock = pygame.time.Clock()
+version = "1.0.0"
+autog = 0.0
+coins = 0.0
+bg_color = white
+show_settings = False
+is_fullscreen = False
+custom_color_mode = False
+custom_r = 128
+custom_g = 128
+custom_b = 128
+secret_key_sequence = ""
+secret_target = "WENEEDMONEY"
+
+# Save directory
+save_dir = os.path.join(os.path.dirname(__file__), 'saves')
+if not os.path.exists(save_dir):
+    try:
+        os.makedirs(save_dir)
+    except Exception:
+        pass
+# Autosave settings
+autosave_interval = 30  # seconds
+last_autosave = pygame.time.get_ticks()
+autosave_flash_until = 0
+
+def save_autosave(coins, mong, autog, cost, cost2, bg_color):
+    data = {
+        'coins': coins,
+        'mong': mong,
+        'autog': autog,
+        'cost': cost,
+        'cost2': cost2,
+        'bg_color': list(bg_color)
+    }
+    path = os.path.join(save_dir, 'autosave.json')
+    try:
+        with open(path, 'w') as f:
+            json.dump(data, f)
+        return True
+    except Exception:
+        return False
+def save_game(slot, coins, mong, autog, cost, cost2, bg_color):
+    data = {
+        'coins': coins,
+        'mong': mong,
+        'autog': autog,
+        'cost': cost,
+        'cost2': cost2,
+        'bg_color': list(bg_color)
+    }
+    path = os.path.join(save_dir, f'save{slot}.json')
+    try:
+        with open(path, 'w') as f:
+            json.dump(data, f)
+        return True
+    except Exception:
+        return False
+
+
+def load_game(slot):
+    path = os.path.join(save_dir, f'save{slot}.json')
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        data['bg_color'] = tuple(data.get('bg_color', [255, 255, 255]))
+        return data
+    except Exception:
+        return None
+
+
+def show_loading_screen(duration=5, hints=None, w=None, h=None):
+    # navy background
+    navy = (0, 0, 128)
+    start = pygame.time.get_ticks()
+    if hints is None:
+        hints = ["Why are you playing this garbage?", "Tip: Click coin to get coin", "beer", "Don't forget to save your game idiot", "this game needs some music, oh wait it has", "If you hate this games music, just press M to mute it"]
+    random.shuffle(hints)
+    hint_count = len(hints)
+    width = w or display_width
+    height = h or display_height
+    while True:
+        now = pygame.time.get_ticks()
+        elapsed = (now - start) / 1000.0
+        if elapsed >= duration:
+            break
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit()
+                raise SystemExit
+        gameDisplay.fill(navy)
+        # big Loading text
+        font = pygame.font.Font('freesansbold.ttf', 48)
+        surf = font.render('Loading...', True, (255, 255, 255))
+        rect = surf.get_rect(center=(width // 2, height // 2 - 40))
+        gameDisplay.blit(surf, rect)
+        # hint cycles every 3 seconds
+        hint_index = int(elapsed / 3) % hint_count
+        hint = hints[hint_index]
+        font2 = pygame.font.Font('freesansbold.ttf', 20)
+        surf2 = font2.render(hint, True, (200, 200, 200))
+        rect2 = surf2.get_rect(center=(width // 2, height // 2 + 20))
+        gameDisplay.blit(surf2, rect2)
+        # progress bar
+        progress_w = int((elapsed / duration) * (width - 200))
+        pygame.draw.rect(gameDisplay, (100, 100, 100), (100, height // 2 + 60, width - 200, 20))
+        pygame.draw.rect(gameDisplay, (0, 200, 0), (100, height // 2 + 60, progress_w, 20))
+        pygame.display.update()
+        pygame.time.delay(100)
+
+def get_centered_positions(display_width, display_height):
+    """Calculate centered positions for UI elements based on current display size"""
+    center_x = display_width // 2
+    center_y = display_height // 2
+    return {
+        'btn_x': center_x,
+        'btn_y': center_y - 50,
+        'coin_text_y': center_y - 150,
+        'coins_display_y': center_y - 100,
+        'upgrade_x': center_x + 150,
+        'upgrade_y': center_y + 100,
+        'auto_miner_x': center_x - 150,
+        'auto_miner_y': center_y + 100,
+        'settings_text_y': display_height - 50,
+        'fullscreen_text_y': display_height - 30
+    }
+
+def DrawText(text, Textcolor, Rectcolor, x, y, fsize):
+    font = pygame.font.Font('freesansbold.ttf', fsize)
+    surf = font.render(text, True, Textcolor, Rectcolor)
+    rect = surf.get_rect()
+    rect.center = (x, y)
+    gameDisplay.blit(surf, rect)
+
+def rectangle(display, color, x, y, w, h):
+    pygame.draw.rect(display, color, [x, y, w, h])
+
+def main_loop():
+    global coins, autog, is_hover, is_pressed, show_settings, bg_color, is_fullscreen, gameDisplay, btn_x, btn_y, custom_color_mode, custom_r, custom_g, custom_b, secret_key_sequence, secret_target, music_muted, _saved_volume, last_autosave, autosave_flash_until
+    mong = 1.0
+    cost = 50.0
+    cost2 = 500.0
+
+    last_autotick = pygame.time.get_ticks()
+    
+    colors_list = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 165, 0), white, black, (220, 20, 60)]
+    
+    current_display_width = display_width
+    current_display_height = display_height
+    btn_x = 400
+    btn_y = 300
+    scale = 1.0
+    # settings icon position will be computed each frame (middle-right)
+    # settings icon position will be computed each frame
+
+    game_running = True
+    while game_running:
+
+        # Auto miner
+        now = pygame.time.get_ticks()
+        if now - last_autotick >= 1000:
+            coins += autog
+            last_autotick = now
+
+        # Autosave: every autosave_interval seconds
+        try:
+            if (now - last_autosave) >= autosave_interval * 1000:
+                # save current state to autosave.json
+                save_autosave(coins, mong, autog, cost, cost2, bg_color)
+                last_autosave = now
+                autosave_flash_until = now + 2000  # show flash for 2 seconds
+        except Exception:
+            pass
+
+        mx, my = pygame.mouse.get_pos()
+
+        # Check hover over coin button
+        is_hover = (btn_x - 50*scale <= mx <= btn_x + 50*scale and btn_y - 50*scale <= my <= btn_y + 50*scale)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                # save on quit
+                try:
+                    save_autosave(coins, mong, autog, cost, cost2, bg_color)
+                except Exception:
+                    pass
+                game_running = False
+
+            if event.type == pygame.KEYDOWN:
+                # Track secret key sequence for "WENEEDMONEY"
+                ch = getattr(event, 'unicode', '')
+                if ch:
+                    ch = ch.upper()
+                    if ch.isalpha():
+                        secret_key_sequence += ch
+                        # keep only the last N chars
+                        if len(secret_key_sequence) > len(secret_target):
+                            secret_key_sequence = secret_key_sequence[-len(secret_target):]
+                        if secret_key_sequence.endswith(secret_target):
+                            coins += 1
+                            secret_key_sequence = ""
+
+                if event.key == pygame.K_ESCAPE:
+                    show_settings = False
+                # removed 'S' key toggle for settings (use the settings icon)
+                elif event.key == pygame.K_f:
+                    is_fullscreen = not is_fullscreen
+                    if is_fullscreen:
+                        gameDisplay = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                        current_display_width, current_display_height = gameDisplay.get_size()
+                        scale = min(current_display_width / display_width, current_display_height / display_height)
+                        btn_x = current_display_width // 2
+                        btn_y = current_display_height // 2
+                    else:
+                        gameDisplay = pygame.display.set_mode((display_width, display_height))
+                        current_display_width = display_width
+                        current_display_height = display_height
+                        scale = 1.0
+                        btn_x = 400
+                        btn_y = 300
+                elif event.key == pygame.K_m:
+                    # toggle music mute
+                    try:
+                        if not music_muted:
+                            _saved_volume = pygame.mixer.music.get_volume()
+                            pygame.mixer.music.set_volume(0.0)
+                            music_muted = True
+                        else:
+                            pygame.mixer.music.set_volume(_saved_volume)
+                            music_muted = False
+                    except Exception:
+                        pass
+
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if show_settings:
+                    if custom_color_mode:
+                        # Handle custom color picker clicks
+                        x, y = pygame.mouse.get_pos()
+                        custom_r, custom_g, custom_b, action = handle_custom_color_click(x, y, custom_r, custom_g, custom_b)
+
+                        if action == "apply":
+                            bg_color = (custom_r, custom_g, custom_b)
+                            custom_color_mode = False
+                            show_settings = False
+                        elif action == "back":
+                            custom_color_mode = False
+                    else:
+                        # Check color selection in settings menu
+                        x, y = pygame.mouse.get_pos()
+                        selected_color = handle_color_selection(x, y, colors_list)
+
+                        if selected_color == "custom":
+                            custom_color_mode = True
+                        elif selected_color:
+                            bg_color = selected_color
+                            show_settings = False
+                elif is_hover:
+                    is_pressed = True
+                    coins += mong
+                else:
+                    # First check if settings icon clicked (middle-right)
+                    x, y = pygame.mouse.get_pos()
+                    settings_icon_size_scaled = max(16, int(settings_icon_base * scale))
+                    margin = int(settings_icon_margin_base * scale)
+                    settings_icon_x = int(current_display_width - margin - settings_icon_size_scaled//2)
+                    settings_icon_y = int(current_display_height // 2)
+                    icon_rect = pygame.Rect(settings_icon_x - settings_icon_size_scaled//2, settings_icon_y - settings_icon_size_scaled//2, settings_icon_size_scaled, settings_icon_size_scaled)
+                    if icon_rect.collidepoint(x, y):
+                        show_settings = not show_settings
+                        # consume click
+                        continue
+
+                    # Check upgrade and auto miner buttons
+                    x, y = pygame.mouse.get_pos()
+
+                    # Upgrade button (scaled)
+                    upgrade_x1 = 600 * scale
+                    upgrade_x2 = 800 * scale
+                    upgrade_y1 = 317 * scale
+                    upgrade_y2 = (317 + 300) * scale
+
+                    # Upgrade icon hitbox (scaled, centered in upgrade button)
+                    upgrade_icon_size = max(16, int(60 * scale))
+                    upgrade_icon_x = int((600 + 100) * scale)
+                    upgrade_icon_y = int((317 + 150) * scale)
+                    upgrade_icon_rect = pygame.Rect(upgrade_icon_x - upgrade_icon_size//2, upgrade_icon_y - upgrade_icon_size//2, upgrade_icon_size, upgrade_icon_size)
+
+                    if (upgrade_x1 <= x <= upgrade_x2 and upgrade_y1 <= y <= upgrade_y2) or upgrade_icon_rect.collidepoint(x, y):
+                        if coins >= cost:
+                            coins -= cost
+                            mong += 1
+                            cost = round(cost * 1.5, 0)
+
+                    # Auto miner button (scaled)
+                    auto_x1 = 50 * scale
+                    auto_x2 = 250 * scale
+                    auto_y1 = 400 * scale
+                    auto_y2 = 700 * scale
+
+                    # Auto miner icon hitbox (scaled, centered in autominer button)
+                    autominer_icon_size = max(16, int(60 * scale))
+                    autominer_icon_x = int((50 + 100) * scale)
+                    autominer_icon_y = int((400 + 150) * scale)
+                    autominer_icon_rect = pygame.Rect(autominer_icon_x - autominer_icon_size//2, autominer_icon_y - autominer_icon_size//2, autominer_icon_size, autominer_icon_size)
+
+                    if (auto_x1 <= x <= auto_x2 and auto_y1 <= y <= auto_y2) or autominer_icon_rect.collidepoint(x, y):
+                        if coins >= cost2:
+                            coins -= cost2
+                            autog += 0.4
+                            cost2 = round(cost2 * 1.5, 0)
+
+                    # Save/Load buttons (three slots)
+                    # positions match drawing below
+                    base_x = int(30 * scale)
+                    base_y = int(140 * scale)
+                    btn_w = int(80 * scale)
+                    btn_h = int(28 * scale)
+                    spacing = int(70 * scale)
+                    for slot in range(1, 4):
+                        sy = base_y + (slot-1) * spacing
+                        save_rect = pygame.Rect(base_x, sy, btn_w, btn_h)
+                        load_rect = pygame.Rect(base_x + btn_w + int(10 * scale), sy, btn_w, btn_h)
+                        if save_rect.collidepoint(x, y):
+                            # save current state
+                            save_game(slot, coins, mong, autog, cost, cost2, bg_color)
+                            # optional visual feedback could be added here
+                            break
+                        if load_rect.collidepoint(x, y):
+                            # show loading screen and load
+                            show_loading_screen(5, None, current_display_width, current_display_height)
+                            data = load_game(slot)
+                            if data:
+                                coins = float(data.get('coins', coins))
+                                mong = float(data.get('mong', mong))
+                                autog = float(data.get('autog', autog))
+                                cost = float(data.get('cost', cost))
+                                cost2 = float(data.get('cost2', cost2))
+                                bg_color = tuple(data.get('bg_color', bg_color))
+                            break
+
+            if event.type == pygame.MOUSEBUTTONUP:
+                is_pressed = False
+
+        # Draw everything
+        gameDisplay.fill(bg_color)
+
+        if show_settings:
+            draw_settings_menu(gameDisplay, grey, black, DrawText, rectangle, custom_color_mode, custom_r, custom_g, custom_b)
+        else:
+            # Coin button sprite state
+            if is_pressed:
+                img = coin_click
+            elif is_hover:
+                img = coin_hover
+            else:
+                img = coin_img
+
+            # Scale coin image if fullscreen
+            if scale != 1.0:
+                scaled_coin = pygame.transform.smoothscale(img, (int(img.get_width() * scale), int(img.get_height() * scale)))
+                rect = scaled_coin.get_rect(center=(btn_x, btn_y))
+                gameDisplay.blit(scaled_coin, rect)
+            else:
+                rect = img.get_rect(center=(btn_x, btn_y))
+                gameDisplay.blit(img, rect)
+
+            # Determine text color based on background (used for icon and UI)
+            text_color = white if bg_color == black else black
+
+            # Draw settings icon at middle-right (use image)
+            settings_icon_size_scaled = max(16, int(settings_icon_base * scale))
+            margin = int(settings_icon_margin_base * scale)
+            settings_icon_x = int(current_display_width - margin - settings_icon_size_scaled//2)
+            settings_icon_y = int(current_display_height // 2)
+            icon_rect = pygame.Rect(settings_icon_x - settings_icon_size_scaled//2, settings_icon_y - settings_icon_size_scaled//2, settings_icon_size_scaled, settings_icon_size_scaled)
+            # draw background rect for icon (subtle)
+            rectangle(gameDisplay, light_grey, icon_rect.x, icon_rect.y, icon_rect.w, icon_rect.h)
+            # blit settings image scaled
+            try:
+                scaled_icon = pygame.transform.smoothscale(settings_img, (settings_icon_size_scaled, settings_icon_size_scaled))
+                gameDisplay.blit(scaled_icon, (icon_rect.x, icon_rect.y))
+            except Exception:
+                # fallback to letter if scaling/blitting fails
+                DrawText('S', text_color, bg_color, settings_icon_x, settings_icon_y, max(12, int(20 * scale)))
+
+            # Scale text sizes for fullscreen
+            font_size_large = int(50 * scale)
+            font_size_medium = int(20 * scale)
+            font_size_small = int(16 * scale)
+            font_size_tiny = int(14 * scale)
+
+            # Show autosave flash if recently autosaved
+            now_tick = pygame.time.get_ticks()
+            if now_tick < autosave_flash_until:
+                DrawText('Autosaved', text_color, bg_color, int(400 * scale), int(current_display_height - 80), font_size_small)
+
+            DrawText(f'Coins: {coins:.2f}', text_color, bg_color, int(400 * scale), int(100 * scale), font_size_large)
+            DrawText("you have " + f'{coins:.2f}' + " coins", text_color, bg_color, int(100 * scale), int(50 * scale), font_size_medium)
+            DrawText(f"upgrade Cost: {cost:.0f}" , text_color, bg_color, int(700 * scale), int(300 * scale), font_size_medium)
+            DrawText(f"auto miner Cost: {cost2:.0f}", text_color, bg_color, int(150 * scale), int(370 * scale), font_size_medium)
+            DrawText("Version: " + version, text_color, bg_color, int(650 * scale), int(50 * scale), font_size_medium)
+            # Position hint text so it doesn't overlap the settings icon
+            hint_x = int(400 * scale)
+            if hint_x + 50 * scale >= settings_icon_x - settings_icon_size_scaled//2:
+                hint_x = max(60, settings_icon_x - settings_icon_size_scaled - int(20 * scale))
+
+            DrawText("Click icon for Settings", text_color, bg_color, hint_x, int(current_display_height - 50), font_size_small)
+            DrawText("Press 'F' for Fullscreen", text_color, bg_color, hint_x, int(current_display_height - 30), font_size_tiny)
+
+            # Draw Save/Load buttons (3 slots)
+            base_x = int(30 * scale)
+            base_y = int(140 * scale)
+            btn_w = int(80 * scale)
+            btn_h = int(28 * scale)
+            spacing = int(70 * scale)
+            for slot in range(1, 4):
+                sy = base_y + (slot-1) * spacing
+                # Save box
+                rectangle(gameDisplay, light_grey, base_x, sy, btn_w, btn_h)
+                DrawText(f"Save {slot}", text_color, bg_color, base_x + btn_w//2, sy + btn_h//2, max(12, int(14 * scale)))
+                # Load box
+                lx = base_x + btn_w + int(10 * scale)
+                rectangle(gameDisplay, light_grey, lx, sy, btn_w, btn_h)
+                DrawText(f"Load {slot}", text_color, bg_color, lx + btn_w//2, sy + btn_h//2, max(12, int(14 * scale)))
+
+            rectangle(gameDisplay, light_grey, int(50 * scale), int(400 * scale), int(200 * scale), int(300 * scale))
+            rectangle(gameDisplay, light_grey, int(600 * scale), int(317 * scale), int(200 * scale), int(300 * scale))
+
+            # Draw upgrade icon if available
+            if upgrade_icon:
+                try:
+                    upgrade_icon_size = max(16, int(60 * scale))
+                    scaled_upgrade = pygame.transform.smoothscale(upgrade_icon, (upgrade_icon_size, upgrade_icon_size))
+                    upgrade_icon_x = int((600 + 100) * scale)
+                    upgrade_icon_y = int((317 + 150) * scale)
+                    gameDisplay.blit(scaled_upgrade, (upgrade_icon_x - upgrade_icon_size//2, upgrade_icon_y - upgrade_icon_size//2))
+                except Exception:
+                    pass
+
+            # Draw autominer icon if available
+            if autominer_icon:
+                try:
+                    autominer_icon_size = max(16, int(60 * scale))
+                    scaled_autominer = pygame.transform.smoothscale(autominer_icon, (autominer_icon_size, autominer_icon_size))
+                    autominer_icon_x = int((50 + 100) * scale)
+                    autominer_icon_y = int((400 + 150) * scale)
+                    gameDisplay.blit(scaled_autominer, (autominer_icon_x - autominer_icon_size//2, autominer_icon_y - autominer_icon_size//2))
+                except Exception:
+                    pass
+
+        pygame.display.update()
+        clock.tick(60)
+
+main_loop()
+# final autosave on normal exit
+try:
+    save_autosave(coins, 1.0 if 'mong' not in globals() else mong, autog, 50.0 if 'cost' not in globals() else cost, 500.0 if 'cost2' not in globals() else cost2, bg_color)
+except Exception:
+    pass
+pygame.quit()
+quit()
